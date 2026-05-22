@@ -4,6 +4,9 @@ Image=localhost/claude-wrapper:latest
 Network=caddy-network
 Environment=PORT=8000
 Environment=CLAUDE_CODE_OAUTH_TOKEN=<dein-token>
+# Optional: additional OAuth tokens are used round-robin per request
+# Environment=CLAUDE_CODE_OAUTH_TOKEN_2=<zweiter-token>
+# Environment=CLAUDE_CODE_OAUTH_TOKEN_3=<dritter-token>
 
 [Service]
 Restart=always

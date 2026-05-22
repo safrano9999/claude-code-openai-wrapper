@@ -1,12 +1,16 @@
 import os
 import logging
-from typing import Optional, Dict, Any, Tuple
+import re
+from typing import Optional, Dict, Any, Tuple, List
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 load_dotenv()
+
+CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_CODE_OAUTH_TOKEN_PATTERN = re.compile(r"^CLAUDE_CODE_OAUTH_TOKEN_(\d+)$")
 
 
 class ClaudeCodeAuthManager:
@@ -173,14 +177,35 @@ class ClaudeCodeAuthManager:
         """Validate that Claude Code CLI is already authenticated."""
         # For CLI authentication, we assume it's valid and let the SDK handle auth
         # The actual validation will happen when we try to use the SDK
+        oauth_tokens = self.get_claude_code_oauth_tokens()
         return {
             "valid": True,
             "errors": [],
             "config": {
                 "method": "Claude Code CLI authentication",
                 "note": "Using existing Claude Code CLI authentication",
+                "oauth_token_count": len(oauth_tokens),
             },
         }
+
+    def get_claude_code_oauth_tokens(self) -> List[str]:
+        """Return configured Claude Code OAuth tokens in deterministic rotation order."""
+        tokens = []
+
+        base_token = os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV)
+        if base_token:
+            tokens.append(base_token)
+
+        numbered_tokens = []
+        for key, value in os.environ.items():
+            match = CLAUDE_CODE_OAUTH_TOKEN_PATTERN.match(key)
+            if match and value:
+                numbered_tokens.append((int(match.group(1)), value))
+
+        for _, token in sorted(numbered_tokens):
+            tokens.append(token)
+
+        return tokens
 
     def get_claude_code_env_vars(self) -> Dict[str, str]:
         """Get environment variables needed for Claude Code SDK."""
@@ -211,9 +236,8 @@ class ClaudeCodeAuthManager:
                 )
 
         elif self.auth_method == "claude_cli":
-            # For CLI auth, don't set any environment variables
-            # Let Claude Code SDK use the existing CLI authentication
-            pass
+            if os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV):
+                env_vars[CLAUDE_CODE_OAUTH_TOKEN_ENV] = os.getenv(CLAUDE_CODE_OAUTH_TOKEN_ENV)
 
         return env_vars
 

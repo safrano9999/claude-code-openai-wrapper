@@ -605,6 +605,26 @@ class TestClaudeCodeCLIRunCompletion:
             assert captured_options[0].permission_mode == "acceptEdits"
 
     @pytest.mark.asyncio
+    async def test_run_completion_rotates_oauth_tokens(self, cli_instance):
+        """run_completion injects OAuth tokens per SDK subprocess in round-robin order."""
+        cli_instance.claude_env_vars = {}
+        cli_instance.claude_oauth_tokens = ["token-1", "token-2"]
+        captured_options = []
+
+        async def mock_query(prompt, options):
+            captured_options.append(options)
+            yield {"type": "assistant"}
+
+        with patch("src.claude_cli.query", mock_query):
+            for _ in range(3):
+                async for _ in cli_instance.run_completion("Hello"):
+                    pass
+
+        assert [
+            opts.env.get("CLAUDE_CODE_OAUTH_TOKEN") for opts in captured_options
+        ] == ["token-1", "token-2", "token-1"]
+
+    @pytest.mark.asyncio
     async def test_run_completion_continue_session(self, cli_instance):
         """run_completion sets continue_session option."""
         mock_message = {"type": "assistant"}

@@ -3,6 +3,7 @@ import os
 import tempfile
 import atexit
 import shutil
+import threading
 import time
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from pathlib import Path
@@ -52,6 +53,36 @@ class ClaudeCodeCLI:
 
         # Store auth environment variables for SDK
         self.claude_env_vars = auth_manager.get_claude_code_env_vars()
+        self.claude_oauth_tokens = list(auth_manager.get_claude_code_oauth_tokens())
+        self._oauth_token_index = 0
+        self._oauth_token_lock = threading.Lock()
+
+        if self.claude_oauth_tokens:
+            logger.info(
+                "Configured %d Claude Code OAuth token(s) for round-robin subprocess auth",
+                len(self.claude_oauth_tokens),
+            )
+
+    def _get_claude_env_vars_for_request(self, rotate_oauth_token: bool = True) -> Dict[str, str]:
+        """Build per-subprocess Claude auth environment without mutating process globals."""
+        env_vars = dict(self.claude_env_vars)
+
+        if self.claude_oauth_tokens:
+            if rotate_oauth_token:
+                with self._oauth_token_lock:
+                    token_index = self._oauth_token_index % len(self.claude_oauth_tokens)
+                    self._oauth_token_index += 1
+            else:
+                token_index = 0
+
+            env_vars["CLAUDE_CODE_OAUTH_TOKEN"] = self.claude_oauth_tokens[token_index]
+            logger.debug(
+                "Using Claude Code OAuth token slot %d/%d",
+                token_index + 1,
+                len(self.claude_oauth_tokens),
+            )
+
+        return env_vars
 
     async def verify_cli(self) -> bool:
         """Verify Claude Agent SDK is working and authenticated."""
@@ -61,13 +92,17 @@ class ClaudeCodeCLI:
             logger.info("Testing Claude Agent SDK...")
 
             messages = []
+            verify_options = ClaudeAgentOptions(
+                max_turns=1,
+                cwd=self.cwd,
+                system_prompt={"type": "preset", "preset": "claude_code"},
+            )
+            verify_options.env.update(
+                self._get_claude_env_vars_for_request(rotate_oauth_token=False)
+            )
             messages_iter = query(
                 prompt="Hello",
-                options=ClaudeAgentOptions(
-                    max_turns=1,
-                    cwd=self.cwd,
-                    system_prompt={"type": "preset", "preset": "claude_code"},
-                ),
+                options=verify_options,
             )
             async for message in messages_iter:
                 messages.append(message)
@@ -120,102 +155,86 @@ class ClaudeCodeCLI:
         """Run Claude Agent using the Python SDK and yield response chunks."""
 
         try:
-            # Set authentication environment variables (if any)
-            original_env = {}
-            if self.claude_env_vars:  # Only set env vars if we have any
-                for key, value in self.claude_env_vars.items():
-                    original_env[key] = os.environ.get(key)
-                    os.environ[key] = value
+            # Build SDK options
+            options = ClaudeAgentOptions(max_turns=max_turns, cwd=self.cwd)
+            options.env.update(self._get_claude_env_vars_for_request())
+
+            # Set model if specified
+            if model:
+                options.model = model
+
+            # Set system prompt - CLAUDE AGENT SDK STRUCTURED FORMAT
+            # Use structured format as per SDK documentation
+            if system_prompt:
+                options.system_prompt = {"type": "text", "text": system_prompt}
+            else:
+                # Use Claude Code preset to maintain expected behavior
+                options.system_prompt = {"type": "preset", "preset": "claude_code"}
+
+            # Set tool restrictions
+            if allowed_tools:
+                options.allowed_tools = allowed_tools
+            if disallowed_tools:
+                options.disallowed_tools = disallowed_tools
+
+            # Set permission mode (needed for tool execution in API context)
+            if permission_mode:
+                options.permission_mode = permission_mode
+
+            # Handle session continuity
+            if continue_session:
+                options.continue_session = True
+            elif session_id:
+                options.resume = session_id
+
+            messages_iter = query(prompt=prompt, options=options)
+            deadline = time.monotonic() + self.timeout if self.timeout else None
 
             try:
-                # Build SDK options
-                options = ClaudeAgentOptions(max_turns=max_turns, cwd=self.cwd)
-
-                # Set model if specified
-                if model:
-                    options.model = model
-
-                # Set system prompt - CLAUDE AGENT SDK STRUCTURED FORMAT
-                # Use structured format as per SDK documentation
-                if system_prompt:
-                    options.system_prompt = {"type": "text", "text": system_prompt}
-                else:
-                    # Use Claude Code preset to maintain expected behavior
-                    options.system_prompt = {"type": "preset", "preset": "claude_code"}
-
-                # Set tool restrictions
-                if allowed_tools:
-                    options.allowed_tools = allowed_tools
-                if disallowed_tools:
-                    options.disallowed_tools = disallowed_tools
-
-                # Set permission mode (needed for tool execution in API context)
-                if permission_mode:
-                    options.permission_mode = permission_mode
-
-                # Handle session continuity
-                if continue_session:
-                    options.continue_session = True
-                elif session_id:
-                    options.resume = session_id
-
-                messages_iter = query(prompt=prompt, options=options)
-                deadline = time.monotonic() + self.timeout if self.timeout else None
-
-                try:
-                    while True:
-                        try:
-                            if deadline is None:
-                                message = await messages_iter.__anext__()
-                            else:
-                                remaining = deadline - time.monotonic()
-                                if remaining <= 0:
-                                    raise asyncio.TimeoutError
-                                message = await asyncio.wait_for(
-                                    messages_iter.__anext__(), timeout=remaining
-                                )
-                        except StopAsyncIteration:
-                            break
-
-                        # Debug logging
-                        logger.debug(f"Raw SDK message type: {type(message)}")
-                        logger.debug(f"Raw SDK message: {message}")
-
-                        # Convert message object to dict if needed
-                        if hasattr(message, "__dict__") and not isinstance(message, dict):
-                            # Convert object to dict for consistent handling
-                            message_dict = {}
-
-                            # Get all attributes from the object
-                            for attr_name in dir(message):
-                                if not attr_name.startswith("_"):  # Skip private attributes
-                                    try:
-                                        attr_value = getattr(message, attr_name)
-                                        if not callable(attr_value):  # Skip methods
-                                            message_dict[attr_name] = attr_value
-                                    except:
-                                        pass
-
-                            logger.debug(f"Converted message dict: {message_dict}")
-                            yield message_dict
+                while True:
+                    try:
+                        if deadline is None:
+                            message = await messages_iter.__anext__()
                         else:
-                            yield message
-                finally:
-                    aclose = getattr(messages_iter, "aclose", None)
-                    if aclose is not None:
-                        try:
-                            await aclose()
-                        except Exception:
-                            logger.debug("Failed to close Claude Agent SDK query", exc_info=True)
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise asyncio.TimeoutError
+                            message = await asyncio.wait_for(
+                                messages_iter.__anext__(), timeout=remaining
+                            )
+                    except StopAsyncIteration:
+                        break
 
+                    # Debug logging
+                    logger.debug(f"Raw SDK message type: {type(message)}")
+                    logger.debug(f"Raw SDK message: {message}")
+
+                    # Convert message object to dict if needed
+                    if hasattr(message, "__dict__") and not isinstance(message, dict):
+                        # Convert object to dict for consistent handling
+                        message_dict = {}
+
+                        # Get all attributes from the object
+                        for attr_name in dir(message):
+                            if not attr_name.startswith("_"):  # Skip private attributes
+                                try:
+                                    attr_value = getattr(message, attr_name)
+                                    if not callable(attr_value):  # Skip methods
+                                        message_dict[attr_name] = attr_value
+                                except:
+                                    pass
+
+                        logger.debug(f"Converted message dict: {message_dict}")
+                        yield message_dict
+                    else:
+                        yield message
             finally:
-                # Restore original environment (if we changed anything)
-                if original_env:
-                    for key, original_value in original_env.items():
-                        if original_value is None:
-                            os.environ.pop(key, None)
-                        else:
-                            os.environ[key] = original_value
+                aclose = getattr(messages_iter, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:
+                        logger.debug("Failed to close Claude Agent SDK query", exc_info=True)
 
         except asyncio.TimeoutError:
             logger.error(f"Claude Agent SDK timed out after {self.timeout:.1f}s")

@@ -334,7 +334,11 @@ class TestClaudeCodeAuthManagerEnvVars:
 
     def test_cli_env_vars_empty(self):
         """CLI method returns no environment variables."""
-        env_copy = {k: v for k, v in os.environ.items() if k != "CLAUDE_AUTH_METHOD"}
+        env_copy = {
+            k: v
+            for k, v in os.environ.items()
+            if k != "CLAUDE_AUTH_METHOD" and not k.startswith("CLAUDE_CODE_OAUTH_TOKEN")
+        }
         env_copy["CLAUDE_AUTH_METHOD"] = "cli"
         with patch.dict(os.environ, env_copy, clear=True):
             import src.auth
@@ -342,6 +346,41 @@ class TestClaudeCodeAuthManagerEnvVars:
             importlib.reload(src.auth)
             env_vars = src.auth.auth_manager.get_claude_code_env_vars()
             assert env_vars == {}
+
+    def test_cli_env_vars_include_primary_oauth_token(self):
+        """CLI method passes the primary OAuth token through to SDK subprocesses."""
+        with patch.dict(
+            os.environ,
+            {"CLAUDE_AUTH_METHOD": "cli", "CLAUDE_CODE_OAUTH_TOKEN": "token-1"},
+            clear=True,
+        ):
+            import src.auth
+
+            importlib.reload(src.auth)
+            env_vars = src.auth.auth_manager.get_claude_code_env_vars()
+            assert env_vars == {"CLAUDE_CODE_OAUTH_TOKEN": "token-1"}
+
+    def test_cli_oauth_tokens_are_sorted_for_rotation(self):
+        """Numbered OAuth tokens are returned in deterministic round-robin order."""
+        with patch.dict(
+            os.environ,
+            {
+                "CLAUDE_AUTH_METHOD": "cli",
+                "CLAUDE_CODE_OAUTH_TOKEN": "token-1",
+                "CLAUDE_CODE_OAUTH_TOKEN_10": "token-10",
+                "CLAUDE_CODE_OAUTH_TOKEN_2": "token-2",
+                "CLAUDE_CODE_OAUTH_TOKEN_X": "ignored",
+            },
+            clear=True,
+        ):
+            import src.auth
+
+            importlib.reload(src.auth)
+            assert src.auth.auth_manager.get_claude_code_oauth_tokens() == [
+                "token-1",
+                "token-2",
+                "token-10",
+            ]
 
 
 class TestVerifyApiKey:
