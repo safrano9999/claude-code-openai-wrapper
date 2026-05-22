@@ -7,6 +7,7 @@ These are pure unit tests that don't require a running server or Claude SDK.
 """
 
 import pytest
+import asyncio
 import os
 import tempfile
 import sys
@@ -674,6 +675,32 @@ class TestClaudeCodeCLIRunCompletion:
             assert messages[0]["subtype"] == "error_during_execution"
             assert messages[0]["is_error"] is True
             assert "SDK failed" in messages[0]["error_message"]
+
+    @pytest.mark.asyncio
+    async def test_run_completion_timeout_closes_query(self, cli_instance):
+        """run_completion closes the SDK generator when the request times out."""
+        cli_instance.timeout = 0.01
+        closed = False
+
+        async def mock_query(*args, **kwargs):
+            nonlocal closed
+            try:
+                await asyncio.sleep(60)
+                yield {"type": "assistant"}
+            finally:
+                closed = True
+
+        with patch("src.claude_cli.query", mock_query):
+            messages = []
+            async for msg in cli_instance.run_completion("Hello"):
+                messages.append(msg)
+
+        assert closed is True
+        assert len(messages) == 1
+        assert messages[0]["type"] == "result"
+        assert messages[0]["subtype"] == "error_during_execution"
+        assert messages[0]["is_error"] is True
+        assert "timed out" in messages[0]["error_message"]
 
     @pytest.mark.asyncio
     async def test_run_completion_restores_env_vars(self, cli_instance):

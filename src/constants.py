@@ -72,8 +72,10 @@ DEFAULT_DISALLOWED_TOOLS = [
 # NOTE: Claude Agent SDK only supports Claude 4+ models, not Claude 3.x.
 #
 # Operators can override the advertised model list without rebuilding the image:
-#   CLAUDE_MODELS_OVERRIDE=claude-sonnet-4-6,claude-opus-4-6
+#   CLAUDE_MODELS_OVERRIDE=claude-opus-4-7,claude-sonnet-4-6
 DEFAULT_CLAUDE_MODELS = [
+    # Claude 4.7 Family (Latest)
+    "claude-opus-4-7",  # Most capable Opus model
     # Claude 4.6 Family (Latest) - RECOMMENDED
     "claude-opus-4-6",  # Most capable
     "claude-sonnet-4-6",  # Recommended - best coding model

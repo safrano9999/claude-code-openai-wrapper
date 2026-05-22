@@ -1,7 +1,9 @@
+import asyncio
 import os
 import tempfile
 import atexit
 import shutil
+import time
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from pathlib import Path
 import logging
@@ -53,19 +55,21 @@ class ClaudeCodeCLI:
 
     async def verify_cli(self) -> bool:
         """Verify Claude Agent SDK is working and authenticated."""
+        messages_iter = None
         try:
             # Test SDK with a simple query
             logger.info("Testing Claude Agent SDK...")
 
             messages = []
-            async for message in query(
+            messages_iter = query(
                 prompt="Hello",
                 options=ClaudeAgentOptions(
                     max_turns=1,
                     cwd=self.cwd,
                     system_prompt={"type": "preset", "preset": "claude_code"},
                 ),
-            ):
+            )
+            async for message in messages_iter:
                 messages.append(message)
                 # Break early on first response to speed up verification
                 # Handle both dict and object types
@@ -91,6 +95,14 @@ class ClaudeCodeCLI:
             logger.warning("  2. Set ANTHROPIC_API_KEY environment variable")
             logger.warning("  3. Test: claude --print 'Hello'")
             return False
+        finally:
+            if messages_iter is not None:
+                aclose = getattr(messages_iter, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:
+                        logger.debug("Failed to close Claude Agent SDK verifier", exc_info=True)
 
     async def run_completion(
         self,
@@ -147,31 +159,54 @@ class ClaudeCodeCLI:
                 elif session_id:
                     options.resume = session_id
 
-                # Run the query and yield messages
-                async for message in query(prompt=prompt, options=options):
-                    # Debug logging
-                    logger.debug(f"Raw SDK message type: {type(message)}")
-                    logger.debug(f"Raw SDK message: {message}")
+                messages_iter = query(prompt=prompt, options=options)
+                deadline = time.monotonic() + self.timeout if self.timeout else None
 
-                    # Convert message object to dict if needed
-                    if hasattr(message, "__dict__") and not isinstance(message, dict):
-                        # Convert object to dict for consistent handling
-                        message_dict = {}
+                try:
+                    while True:
+                        try:
+                            if deadline is None:
+                                message = await messages_iter.__anext__()
+                            else:
+                                remaining = deadline - time.monotonic()
+                                if remaining <= 0:
+                                    raise asyncio.TimeoutError
+                                message = await asyncio.wait_for(
+                                    messages_iter.__anext__(), timeout=remaining
+                                )
+                        except StopAsyncIteration:
+                            break
 
-                        # Get all attributes from the object
-                        for attr_name in dir(message):
-                            if not attr_name.startswith("_"):  # Skip private attributes
-                                try:
-                                    attr_value = getattr(message, attr_name)
-                                    if not callable(attr_value):  # Skip methods
-                                        message_dict[attr_name] = attr_value
-                                except:
-                                    pass
+                        # Debug logging
+                        logger.debug(f"Raw SDK message type: {type(message)}")
+                        logger.debug(f"Raw SDK message: {message}")
 
-                        logger.debug(f"Converted message dict: {message_dict}")
-                        yield message_dict
-                    else:
-                        yield message
+                        # Convert message object to dict if needed
+                        if hasattr(message, "__dict__") and not isinstance(message, dict):
+                            # Convert object to dict for consistent handling
+                            message_dict = {}
+
+                            # Get all attributes from the object
+                            for attr_name in dir(message):
+                                if not attr_name.startswith("_"):  # Skip private attributes
+                                    try:
+                                        attr_value = getattr(message, attr_name)
+                                        if not callable(attr_value):  # Skip methods
+                                            message_dict[attr_name] = attr_value
+                                    except:
+                                        pass
+
+                            logger.debug(f"Converted message dict: {message_dict}")
+                            yield message_dict
+                        else:
+                            yield message
+                finally:
+                    aclose = getattr(messages_iter, "aclose", None)
+                    if aclose is not None:
+                        try:
+                            await aclose()
+                        except Exception:
+                            logger.debug("Failed to close Claude Agent SDK query", exc_info=True)
 
             finally:
                 # Restore original environment (if we changed anything)
@@ -182,6 +217,14 @@ class ClaudeCodeCLI:
                         else:
                             os.environ[key] = original_value
 
+        except asyncio.TimeoutError:
+            logger.error(f"Claude Agent SDK timed out after {self.timeout:.1f}s")
+            yield {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "error_message": f"Claude Agent SDK timed out after {self.timeout:.1f}s",
+            }
         except Exception as e:
             logger.error(f"Claude Agent SDK error: {e}")
             # Yield error message in the expected format
