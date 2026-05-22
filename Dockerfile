@@ -27,7 +27,10 @@ WORKDIR /app
 RUN poetry install --no-root
 
 # Symlink bundled Claude CLI so it's available as 'claude-cli' globally
-RUN ln -s "$(find / -name claude -path '*/claude_agent_sdk/_bundled/*' -type f 2>/dev/null | head -1)" /usr/local/bin/claude-cli
+RUN CLAUDE_BIN="$(find / -name claude -type f 2>/dev/null | grep _bundled | head -1)" \
+    && echo "Found claude binary at: ${CLAUDE_BIN}" \
+    && if [ -n "$CLAUDE_BIN" ]; then ln -s "$CLAUDE_BIN" /usr/local/bin/claude-cli && chmod +x "$CLAUDE_BIN"; \
+       else echo "ERROR: claude binary not found" && find / -path "*/claude_agent_sdk/*" -type f 2>/dev/null && exit 1; fi
 
 # Expose the port (default 8000)
 EXPOSE 8000
