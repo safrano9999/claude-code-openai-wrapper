@@ -14,6 +14,9 @@ ENV PATH="/root/.local/bin:${PATH}"
 # Note: Claude Code CLI is bundled with claude-agent-sdk >= 0.1.8
 # No separate Node.js/npm installation required
 
+# Skip Claude Code onboarding wizard (no interactive TTY in container)
+RUN echo '{"hasCompletedOnboarding":true}' > /root/.claude.json
+
 # Copy the app code
 COPY . /app
 
@@ -22,6 +25,9 @@ WORKDIR /app
 
 # Install Python dependencies with Poetry
 RUN poetry install --no-root
+
+# Symlink bundled Claude CLI so it's available as 'claude-cli' globally
+RUN ln -s "$(find / -name claude -path '*/claude_agent_sdk/_bundled/*' -type f 2>/dev/null | head -1)" /usr/local/bin/claude-cli
 
 # Expose the port (default 8000)
 EXPOSE 8000
