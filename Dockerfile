@@ -26,14 +26,10 @@ WORKDIR /app
 # Install Python dependencies with Poetry
 RUN poetry install --no-root
 
-# Symlink bundled Claude CLI so it's available as 'claude-cli' globally
-RUN CLAUDE_BIN="$(find / -name claude -type f 2>/dev/null | grep _bundled | head -1)" \
-    && echo "Found claude binary at: ${CLAUDE_BIN}" \
-    && if [ -n "$CLAUDE_BIN" ]; then ln -s "$CLAUDE_BIN" /usr/local/bin/claude-cli && chmod +x "$CLAUDE_BIN"; \
-       else echo "ERROR: claude binary not found" && find / -path "*/claude_agent_sdk/*" -type f 2>/dev/null && exit 1; fi
-
 # Expose the port (default 8000)
 EXPOSE 8000
 
-# Run the app with Uvicorn (development mode with reload; switch to --no-reload for prod)
-CMD ["poetry", "run", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Entrypoint: link bundled claude binary at runtime, then start server
+CMD bash -c 'CLAUDE_BIN="$(find / -name claude -path "*_bundled*" -type f 2>/dev/null | head -1)" \
+    && [ -n "$CLAUDE_BIN" ] && ln -sf "$CLAUDE_BIN" /usr/local/bin/claude-cli && chmod +x "$CLAUDE_BIN"; \
+    exec poetry run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload'
