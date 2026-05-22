@@ -2,7 +2,7 @@ version: '3'
 services:
   claude-wrapper:
     build: .
-    image: claude-wrapper:latest
+    image: localhost/claude-wrapper:latest
     ports:
       - "8000:8000"
     volumes:
