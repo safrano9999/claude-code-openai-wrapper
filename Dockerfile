@@ -30,6 +30,6 @@ RUN poetry install --no-root
 EXPOSE 8000
 
 # Entrypoint: link bundled claude binary at runtime, then start server
-CMD bash -c 'CLAUDE_BIN="$(find / -name claude -path "*_bundled*" -type f 2>/dev/null | head -1)" \
-    && [ -n "$CLAUDE_BIN" ] && ln -sf "$CLAUDE_BIN" /usr/local/bin/claude-cli && chmod +x "$CLAUDE_BIN"; \
-    exec poetry run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload'
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
