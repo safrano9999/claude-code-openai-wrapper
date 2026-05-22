@@ -1,0 +1,13 @@
+[Container]
+ContainerName=claude-wrapper
+Image=localhost/claude-wrapper:latest
+Network=caddy-network
+Environment=PORT=8000
+Environment=CLAUDE_CODE_OAUTH_TOKEN=<dein-token>
+
+[Service]
+Restart=always
+TimeoutStartSec=60
+
+[Install]
+WantedBy=default.target
